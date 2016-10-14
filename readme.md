@@ -39,7 +39,7 @@ Future work
 
 Example
 --------
-'''scala
+```scala
 val m_conf = new ModelConf()
       .set("length_coef", "0.7")
       .set("time_coef", "0.3")
@@ -70,4 +70,4 @@ val codm = m.calibrateODMatrix(odm, counts, 10, "PR")
 
 //traffic assigment
 val t = m.assigmentTraffic2(codm)
-'''
+```
