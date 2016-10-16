@@ -25,7 +25,7 @@ Traffic assigment
 
 Example running
 -----------------
-Network: > 3 000 000 edges
+com.kolovsky.traffic_modeler.Network: > 3 000 000 edges
 <br>Zones (centroids): > 22 000
 <br>Cluster: 100 CPU (xenon)
 
@@ -37,10 +37,15 @@ Future work
 -------------
 * DTA (Dinamic Traffic Assigment)
 
+Scala Documentation
+-------------------
+
+http://kolovsky.com/scala-doc/
+
 Example
 --------
 ```scala
-val m_conf = new ModelConf()
+val m_conf = new com.kolovsky.traffic_modeler.ModelConf()
       .set("length_coef", "0.7")
       .set("time_coef", "0.3")
       .set("alpha", "1")
@@ -52,15 +57,15 @@ val m_conf = new ModelConf()
 val edges = Array((1, 1, 2, 10.0, 15.0),(2, 2, 3, 17.0, 13.0))
 
 // dataset of zones (id, node_id, trips)
-val zones = Array(new Zone(1, 1, 20), new Zone(2, 3, 30))
+val zones = Array(new com.kolovsky.traffic_modeler.Zone(1, 1, 20), new com.kolovsky.traffic_modeler.Zone(2, 3, 30))
 
 // dataset of count profile (edge_id, traffic count)
 val counts = Array((1, 25.0),(2, 45.0))
 
-val n = new NetworkIndex()
+val n = new com.kolovsky.traffic_modeler.NetworkIndex()
 n.addEdges(edges)
 
-val m = new Model(n, zones, m_conf)
+val m = new com.kolovsky.traffic_modeler.Model(n, zones, m_conf)
 
 // trip distribution
 val odm = m.estimateODMatrix(sc.parallelize(zones))
