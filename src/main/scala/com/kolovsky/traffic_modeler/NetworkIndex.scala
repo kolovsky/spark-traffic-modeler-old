@@ -2,7 +2,7 @@ package com.kolovsky.traffic_modeler
 
 import java.io.{FileInputStream, FileOutputStream, ObjectInputStream, ObjectOutputStream}
 
-import scala.collection.mutable.{HashMap, ListBuffer, PriorityQueue}
+import scala.collection.mutable.{HashMap, ListBuffer, PriorityQueue, Stack}
 
 /**
  * Created by kolovsky on 18.5.16.
@@ -10,25 +10,22 @@ import scala.collection.mutable.{HashMap, ListBuffer, PriorityQueue}
 class NetworkIndex extends Network with Serializable {
   val hm: HashMap[Int, Node] = HashMap.empty[Int, Node]
   var nodes: Array[Node] = null
+  var links: Array[Link] = null
+  var lastLinkIndex = 0
 
-  def addEdges(edges: Array[(Int, Int, Int, Double, Double)]): Unit = {
+  def addEdges(edges: Array[(Int, Int, Int, Double, Double, Boolean)]): Unit = {
     if (nodes != null){
       throw new Exception("Network already contains data!")
     }
-    for (e <- edges) {
+
+    val edgesFiltred = edges
+    links = Array.ofDim[Link](edgesFiltred.length)
+
+    for (e <- edgesFiltred) {
+      // condition for same source and destination node
       if (e._2 != e._3) {
-        var source = hm.get(e._2)
-        var target = hm.get(e._3)
-        var s: Node = null
-        var t: Node = null
-        if (source == None) {
-          s = new Node(e._2)
-          hm += (e._2 -> s)
-        }
-        if (target == None) {
-          t = new Node(e._3)
-          hm += (e._3 -> t)
-        }
+        hm.getOrElseUpdate(e._2, new Node(e._2))
+        hm.getOrElseUpdate(e._3, new Node(e._3))
       }
     }
 
@@ -38,13 +35,125 @@ class NetworkIndex extends Network with Serializable {
       nodes(i).i = i
     }
     // create edges
-    for(e <- edges){
+    var i = 0
+    for(e <- edgesFiltred){
       if (e._2 != e._3){
         val s = hm.get(e._2).get
         val t = hm.get(e._3).get
-        s.edges = s.edges :+ new EdgeIndex(e._1, s.i, t.i, e._4, e._5)
+
+        val e1 = new EdgeIndex(i, s.i, t.i)
+        var e2: EdgeIndex = null
+        s.edges = s.edges :+ e1
+        s.vertexDeegre += 1
+        t.vertexDeegre += 1
+        //for both directions (not oneway)
+        if (!e._6){
+          e2 = new EdgeIndex(i, t.i, s.i)
+          t.edges = t.edges :+ e2
+        }
+        links(i) = new Link(Array(e._1), e._4, e._5, e1, e2, i)
+        lastLinkIndex = i
+        i += 1
       }
     }
+  }
+
+  /**
+    * This method reduce number of nodes and edges in graph.
+    * Method remove nodes with deegre of vertex 2
+    *  O-->O-->O-->O reduce to 0---------->O
+    * @param mandatoryNodes - nodes that will not remove in reduced graph
+    */
+  def reduceSize(mandatoryNodes: Array[Int]): Unit ={
+    // labeled mandatory nodes
+    for(id <- mandatoryNodes){
+      idToNode(id).vertexDeegre = -1
+    }
+    // start DFS
+    val q = new Stack[Node]()
+    q.push(nodes(0))
+    // map of founded nodes
+    val found = Array.ofDim[Boolean](nodes.length)
+    // map of prev nodes
+    val prevNode = Array.ofDim[Node](nodes.length)
+    var n: Node = null
+    // for merge link
+    var agg = ListBuffer[Link]()
+    var sourceAgg: Node = null
+    var targetAgg: Node = null
+    // DFS loop
+    while (q.nonEmpty){
+      n = q.pop()
+
+      if(!found(n.i)){
+        found(n.i) = true
+        for (eo <- n.edges){
+          val e = eo.asInstanceOf[EdgeIndex]
+          q.push(nodes(e.t))
+          prevNode(e.t) = n
+          if (prevNode(n.i) != null) {
+            if (n.vertexDeegre == 2 && prevNode(n.i).i != e.t) {
+              if (agg.isEmpty) {
+                sourceAgg = prevNode(n.i)
+                targetAgg = n
+                agg += links(prevNode(n.i).edges.filter(_.asInstanceOf[EdgeIndex].t == n.i).head.asInstanceOf[EdgeIndex].link_i)
+              }
+              agg += links(e.link_i)
+              if (e.s != targetAgg.i) {
+                agg.clear()
+                sourceAgg = null
+                targetAgg = null
+              }
+              targetAgg = nodes(e.t)
+              if (nodes(e.t).vertexDeegre != 2 || found(e.t)) {
+                if (agg.nonEmpty) {
+                  mergeLink(agg.toArray, sourceAgg, targetAgg)
+                  agg.clear()
+                  sourceAgg = null
+                  targetAgg = null
+                }
+              }
+            }
+            if (n.vertexDeegre != 2 && agg.nonEmpty) {
+              agg.clear()
+              sourceAgg = null
+              targetAgg = null
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private def mergeLink(linksAgg: Array[Link], source: Node, target: Node): Unit= {
+    val length = linksAgg.map(_.l).sum
+    val time = linksAgg.map(_.t).sum
+    val ids = linksAgg.map(_.ids).reduce(_++_)
+    val isOneway = linksAgg.map(_.e2).contains(null)
+    val e1 = new EdgeIndex(lastLinkIndex + 1, source.i, target.i)
+    var e2: EdgeIndex = null
+    if (!isOneway){
+      e2 = new EdgeIndex(lastLinkIndex + 1, target.i, source.i)
+      target.edges = target.edges :+ e2
+    }
+    source.edges = source.edges :+ e1
+    if (links.length <= lastLinkIndex + 1){
+      links = links ++ Array.ofDim[Link](100)
+      //println("prodluzuji")
+    }
+    links(lastLinkIndex + 1) = new Link(ids,length, time, e1, e2, lastLinkIndex + 1)
+    lastLinkIndex += 1
+
+    //remove old edges and links
+    for (l <-linksAgg){
+      nodes(l.e1.s).edges = nodes(l.e1.s).edges.filter(_.asInstanceOf[EdgeIndex].link_i != l.i)
+      if(l.e2 != null){
+        nodes(l.e2.s).edges = nodes(l.e2.s).edges.filter(_.asInstanceOf[EdgeIndex].link_i != l.i)
+      }
+      links(l.i) = null
+    }
+
+
   }
 
   /**
@@ -64,19 +173,21 @@ class NetworkIndex extends Network with Serializable {
     }
     dist(s_node.i) = 0
     pq.enqueue((0,s_node))
-
+    var pp = 0 //smazat
     var cost: Double = 0
     while (pq.nonEmpty){
       var n = pq.dequeue()._2
       for (eo <- n.edges){
+        pp += 1 //spazat
         val e = eo.asInstanceOf[EdgeIndex]
-        if(dist(n.i) + e.cost(l_coef, t_coef) < dist(e.t)){
-          dist(e.t) = dist(n.i) + e.cost(l_coef, t_coef)
+        if(dist(n.i) + e.cost(l_coef, t_coef, links) < dist(e.t)){
+          dist(e.t) = dist(n.i) + e.cost(l_coef, t_coef, links)
           pq.enqueue((dist(e.t), nodes(e.t)))
           prev(e.t) = e
         }
       }
     }
+    println("Dij relax: "+pp)
     return (dist, prev)
   }
 
@@ -109,22 +220,10 @@ class NetworkIndex extends Network with Serializable {
     var ae = prev(t_node.i)
     val path: ListBuffer[Int] = ListBuffer()
     while (ae != null){
-      path += ae.id
+      path ++= links(ae.link_i).ids
       ae = prev(ae.s)
     }
     return path.reverse.toArray
-  }
-
-  def saveToFile(filename: String): Unit = {
-    val output = new ObjectOutputStream(new FileOutputStream(filename))
-    output.writeObject(this)
-    output.close()
-  }
-
-  def loadFromFile(filename: String): Network = {
-    val input = new ObjectInputStream(new FileInputStream(filename))
-    return input.readObject().asInstanceOf[Network]
-    //input.close()
   }
 
   def idToNode(id: Int): Node = {

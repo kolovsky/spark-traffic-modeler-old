@@ -6,9 +6,9 @@ package com.kolovsky.traffic_modeler
 trait Network {
   /**
    * Method for build graph form list of edges
-   * @param edges - Array[(edge_id, source_node_id, traget_node_id, length, transport_time)]
+   * @param edges - Array[(edge_id, source_node_id, target_node_id, length, transport_time, isOneWay)]
    */
-  def addEdges(edges: Array[(Int, Int, Int, Double, Double)]): Unit
+  def addEdges(edges: Array[(Int, Int, Int, Double, Double, Boolean)]): Unit
 
   /**
    * Return costs and paths from source zone to all destination zones. Edge cost is computed as l_coef*length + t_coef*time
@@ -37,10 +37,6 @@ trait Network {
    * @return - Node
    */
   def idToNode(id: Int): Node
-  // create graph from file
-  def loadFromFile(filename: String): Network
-  // save graph to file
-  def saveToFile(filename: String): Unit
 
   /**
    * Compute all costs from source zones to all destination zones. Edge cost is computed as l_coef*length + t_coef*time.

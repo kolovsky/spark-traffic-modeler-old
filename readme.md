@@ -45,7 +45,8 @@ http://kolovsky.com/scala-doc/
 Example
 --------
 ```scala
-val m_conf = new com.kolovsky.traffic_modeler.ModelConf()
+    val sc = new SparkContext(conf)
+    val m_conf = new ModelConf()
       .set("length_coef", "0.7")
       .set("time_coef", "0.3")
       .set("alpha", "1")
@@ -53,26 +54,27 @@ val m_conf = new com.kolovsky.traffic_modeler.ModelConf()
       .set("gamma", "1")
       .set("F", "log_normal")
 
-// dataset of edges (edge_id, source node, destination node, length, travel time)
-val edges = Array((1, 1, 2, 10.0, 15.0),(2, 2, 3, 17.0, 13.0))
+    // dataset of edges (edge_id, source node, destination node, length, travel time)
+    val edges = Array((1, 1, 2, 10.0, 15.0, false),(2, 2, 3, 17.0, 13.0, false))
 
-// dataset of zones (id, node_id, trips)
-val zones = Array(new com.kolovsky.traffic_modeler.Zone(1, 1, 20), new com.kolovsky.traffic_modeler.Zone(2, 3, 30))
+    // dataset of zones (id, node_id, trips)
+    val zones = Array(new Zone(1, 1, 20), new Zone(2, 3, 30))
 
-// dataset of count profile (edge_id, traffic count)
-val counts = Array((1, 25.0),(2, 45.0))
+    // dataset of count profile (edge_id, traffic count)
+    val counts = Array((1, 25.0),(2, 45.0))
 
-val n = new com.kolovsky.traffic_modeler.NetworkIndex()
-n.addEdges(edges)
+    val n: Network = new NetworkIndex()
+    n.addEdges(edges)
 
-val m = new com.kolovsky.traffic_modeler.Model(n, zones, m_conf)
+    val m = new Model(n, zones, m_conf)
 
-// trip distribution
-val odm = m.estimateODMatrix(sc.parallelize(zones))
+    // trip distribution
+    val cost = m.costMatrix(sc.parallelize(zones))
+    val odm = m.estimateODMatrix(cost)
 
-// OD Matrix Calibration
-val codm = m.calibrateODMatrix(odm, counts, 10, "PR")
+    // OD Matrix Calibration
+    val codm = m.calibrateODMatrix(odm, counts, 10, "PR")
 
-//traffic assigment
-val t = m.assigmentTraffic2(codm)
+    //traffic assigment
+    val t = m.assigmentTraffic2(codm)
 ```
