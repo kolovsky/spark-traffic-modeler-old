@@ -3,6 +3,7 @@ package com.kolovsky.traffic_modeler
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 
+import scala.collection.mutable
 import scala.collection.mutable.{HashMap, ListBuffer}
 
 /**
@@ -13,6 +14,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
   val network = g
   //(node_id, Pi)
   val zones = zone
+  println("HHH")
 
   /**
    * Compute cost matrix.
@@ -322,5 +324,242 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
     val cost = cell._3
     val trips = o.trips * d.trips * conf.F(cost)
     return (o, d, trips)
+  }
+
+  /**
+    * Calibrate OD matrix using algorithm publicated in Doblas 2005
+    *
+    * Doblas, J. & Benitez, F. G. An approach to estimating and updating origin--destination matrices based upon traffic counts
+    * preserving the prior structure of a survey matrix
+    * Transportation Research Part B: Methodological, Elsevier, 2005, 39, 565-591
+    *
+    * @param in_OD - input OD Matrix RDD[(origin, destination, trips)]
+    * @param v - vector with counts profile Array[(edge_id, couts)]
+    * @param m - max number of iteration for minimaliation of subproblem (for Frank-Wolfe algorithm)
+    * @param s - max number of subproblem
+    * @param S - scale factor (mode in Doblas 2005)
+    * @param limit - function where return limits. f(trips, mode, level)
+    *   mode: 'up' for upper bound and 'lo' for lower bound
+    *   level:  0 for OD Pair
+    *           1 for row/column,
+    *           2 for all trips in network
+    * @return OD Matrix
+    */
+  def calibrateODMatrixLagrange(in_OD: RDD[(Zone, Zone, Double)], v: Array[(Int, Double)], m: Int, s: Int, S: Double, limit: (Double, String, Int) => Double): RDD[(Zone, Zone, Double)] = {
+    val v_hm = new HashMap[Int, Double]()
+    v_hm ++= v
+    // compute path and filter to count profile
+    val paths_trips = filtredPath(in_OD, v_hm)
+    // init ODM
+    var init_odm = paths_trips.map(c => {
+      var odp = new ODPair(c._1, c._2)
+      odp.setPath(c._4).setTrips(c._3)
+      odp.lij = limit(odp.trips, "lo", 0)
+      odp.uij = limit(odp.trips, "up", 0)
+      odp
+    })
+    init_odm.persist()
+    init_odm.localCheckpoint()
+
+    // compute model traffic on count profile (assigment)
+    var model_traffic = init_odm.flatMap(x => x.path.map(id => (id, x.trips))).reduceByKey(_+_)
+    model_traffic.persist()
+
+    // create HashMap from model traffic
+    val v_m_hm = new HashMap[Int, Double]()
+    v_m_hm ++= model_traffic.collect()
+
+    // compure value of Z function
+    var Z = model_traffic.map(t => math.pow(t._2 - v_hm.get(t._1).get, 2)).reduce(_+_)
+    println("Z is " + math.sqrt(Z/v.length))
+
+    //initializate lagrange coeficient and limits
+    var sum_by_row = init_odm.map(c => (c.s, c.trips)).reduceByKey(_+_).collect()
+    var sum_by_column = init_odm.map(c => (c.t, c.trips)).reduceByKey(_+_).collect()
+    var all_trips = init_odm.map(_.trips).reduce(_+_)
+    val lag = new Lagrange(sum_by_row, sum_by_column, all_trips, limit)
+
+    var odm_dir: RDD[ODPair] = null
+    var odm_grad: RDD[ODPair] = null
+    var out_odm: RDD[ODPair] = null
+
+    for (i <- 0 to s) {
+      println("s = "+i)
+      var init_odm_old:RDD[ODPair] = null
+      for (j <- 0 to m) {
+        // compute gradient of lagrange function
+        odm_grad = gradLagrange(init_odm, v_hm, v_m_hm, lag, S)
+        // estimate search direction for Frank-Wolfe algorithm
+        odm_dir = searchDirection(odm_grad)
+
+        odm_dir.persist()
+        odm_dir.localCheckpoint()
+        // optimal lambda for direction (line search)
+        val lam = lambda(odm_dir, v_hm, v_m_hm, lag, S)
+        println("Lambda:"+lam)
+
+        // new ODM
+        out_odm = odm_dir.map(c => c.setTrips(c.trips + lam * c.dir)).map(_.copy())
+        out_odm.persist()
+        out_odm.localCheckpoint()
+
+        // compute model traffic and evaluate objective function
+        model_traffic = out_odm.flatMap(x => x.path.map(id => (id, x.trips))).reduceByKey(_ + _)
+        v_m_hm.clear()
+        v_m_hm ++= model_traffic.collect()
+        Z = model_traffic.map(t => math.pow(t._2 - v_hm.get(t._1).get, 2)).reduce(_ + _)
+        println("Z is " + math.sqrt(Z/v.length))
+
+        init_odm_old = init_odm
+        init_odm = out_odm
+        init_odm_old.unpersist()
+        odm_dir.unpersist()
+      }
+      // update Lagrage coeficients
+      sum_by_row = init_odm.map(c => (c.s, c.trips)).reduceByKey(_+_).collect()
+      sum_by_column = init_odm.map(c => (c.t, c.trips)).reduceByKey(_+_).collect()
+      all_trips = init_odm.map(_.trips).reduce(_+_)
+      lag.updateLagrange(sum_by_row, sum_by_column, all_trips)
+    }
+    // check contraints
+    //for Cell
+    println("Check:"+init_odm.filter(_.check()).count()/init_odm.count().toDouble)
+    // for Row
+    val dd = init_odm.map(c => (c.s, c.trips)).reduceByKey(_+_).filter(x => {
+      var ret = false
+      if (lag.getLRow(x._1) < x._2 && lag.getURow(x._1) > x._2){
+        ret = true
+      }
+      ret
+    }).count()
+    println("Check row: "+ (dd/sum_by_row.length.toDouble))
+    // for all trips in network
+    if(lag.getL() <= all_trips && lag.getU() >= all_trips){
+      println("Check all trips: OK!")
+    }
+    else {
+      println("Check all trips: NOT OK!")
+    }
+
+    return init_odm.map(c => (c.s, c.t, c.trips))
+  }
+
+  /**
+    * Compute gradient of Lagransian function
+    * @param odm OD Matrix RDD[ODPair]
+    * @param v_hm - reference counts
+    * @param v_m_hm - model traffic
+    * @param lag - lagrange coeficients, Lagrange
+    * @param S - scale factor (more in Doblas 2005)
+    * @return RDD[ODPair] with grad
+    */
+  private def gradLagrange(odm: RDD[ODPair], v_hm: HashMap[Int, Double], v_m_hm: HashMap[Int, Double], lag: Lagrange, S: Double): RDD[ODPair] = {
+    // derivate P respekt Tij_traffic-counts (28)
+    val der_Z = odm.map(c => {
+      val der = 2 * c.path.map(id => v_m_hm.get(id).get - v_hm.get(id).get).sum
+      //println(der)
+      c.setGrad(der)
+    })
+    // derivate P respect Tij_restriction (29)
+    val all_trips = odm.map(_.trips).reduce(_+_)
+    val sum_by_j = odm.map(c => (c.s, c.trips)).reduceByKey(_+_)
+    val sum_by_i = odm.map(c => (c.t, c.trips)).reduceByKey(_+_)
+    val odm_sum = der_Z.map(c => (c.s, c)).join(sum_by_j).map(x => {
+      val c = x._2._1
+      c.sum_by_row = x._2._2
+      c
+    }).map(c => (c.t, c)).join(sum_by_i).map(x =>{
+      val c = x._2._1
+      c.sum_by_column = x._2._2
+      c
+    })
+    val odm_grad = odm_sum.map(c =>{
+      val i = c.s
+      val j = c.t
+      val values = 2*S*( BO(c.sum_by_row - lag.getLRow(i) + lag.getBetaRow(i)) - BO(lag.getURow(i) - c.sum_by_row + lag.getDeltaRow(i)) )
+      + 2*S*( BO(c.sum_by_column - lag.getLColumn(j) + lag.getBetaColumn(j)) - BO(lag.getUColumn(j) - c.sum_by_column + lag.getDeltaColumn(j)) )
+      + 2*S*( BO(all_trips - lag.getL() + lag.getBeta()) - BO(lag.getU() - all_trips + lag.getDelta()) )
+      c.grad += values
+      c
+    })
+    return odm_grad
+  }
+
+  private def searchDirection(odm: RDD[ODPair]): RDD[ODPair] = {
+    odm.map(c => {
+
+      if (c.grad > 0){
+        c.dir = c.lij - c.trips
+      }
+      if (c.grad == 0){
+        c.dir = c.trips - c.trips
+      }
+      if (c.grad < 0){
+        c.dir = c.uij - c.trips
+      }
+      //println(c.dir)
+      c
+    })
+  }
+
+  private def lambda(odm: RDD[ODPair],v_hm: HashMap[Int, Double], v_m_hm: HashMap[Int, Double], lag: Lagrange, S: Double): Double = {
+    val v_der = odm.flatMap(c => c.path.map(id => (id, c.dir))).reduceByKey(_+_)
+
+    def P(lambda: Double): Double ={
+      val r1 = 2 * v_der.map(v_c => (v_m_hm.get(v_c._1).get + lambda*v_c._2 - v_hm.get(v_c._1).get)*v_c._2 ).reduce(_+_)
+      //println(r1)
+      val r2 = - 2 * S * odm.map(c => (c.s, (c.trips, c.dir)))
+        .reduceByKey((a,b) => (a._1 + b._1, a._2 + b._2))
+        .map(x => BO(lag.getURow(x._1) - x._2._1 - lambda * x._2._2 + lag.getDeltaRow(x._1))*x._2._2 ).reduce(_+_)
+      val r3 = 2 * S * odm.map(c => (c.s, (c.trips, c.dir)))
+        .reduceByKey((a,b) => (a._1 + b._1, a._2 + b._2))
+        .map(x => BO(x._2._1 + lambda * x._2._2 - lag.getLRow(x._1) + lag.getBetaRow(x._1))*x._2._2 ).reduce(_+_)
+      val r4 = - 2 * S * odm.map(c => (c.t, (c.trips, c.dir)))
+        .reduceByKey((a,b) => (a._1 + b._1, a._2 + b._2))
+        .map(x => BO(lag.getUColumn(x._1) - x._2._1 - lambda * x._2._2 + lag.getDeltaColumn(x._1))*x._2._2 ).reduce(_+_)
+      val r5 = 2 * S * odm.map(c => (c.t, (c.trips, c.dir)))
+        .reduceByKey((a,b) => (a._1 + b._1, a._2 + b._2))
+        .map(x => BO(x._2._1 + lambda * x._2._2 - lag.getLColumn(x._1) + lag.getBetaColumn(x._1))*x._2._2 ).reduce(_+_)
+      val all_trips = odm.map(_.trips).reduce(_+_)
+      val all_dir = odm.map(_.dir).reduce(_+_)
+      val r6 = -2*S*BO(lag.getU()-all_trips - lambda * all_dir + lag.getDelta())* all_dir
+      val r7 = 2*S*BO(all_trips + lambda * all_dir - lag.getL() + lag.getBeta())* all_dir
+      return r1 + r2 + r3 + r4 + r5 + r6 + r7
+    }
+    // finging zero point
+    val F0 = P(0)
+    val F1 = P(1)
+    //for (ii <- 0 to 10){
+    //  println(P(ii/10.0))
+    //}
+
+    var lam = 0.5
+    val F0a = math.abs(F0)
+    val F1a = math.abs(F1)
+
+    if (F0 * F1 < 0){
+      lam = F0a / (F0a + F1a)
+    }
+    else{
+      if(F0a < F1a){
+        lam = 0
+      }
+      else{
+        lam = 1
+      }
+    }
+    return lam
+  }
+
+  /**
+    * Bracket operator (more in Raclaites 2007)
+    * @param x
+    * @return
+    */
+  private def BO(x: Double): Double ={
+    if (x <= 0){
+      return x
+    }
+    return 0
   }
 }

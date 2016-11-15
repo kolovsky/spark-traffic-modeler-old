@@ -187,7 +187,7 @@ class NetworkIndex extends Network with Serializable {
         }
       }
     }
-    println("Dij relax: "+pp)
+    //println("Dij relax: "+pp)
     return (dist, prev)
   }
 
