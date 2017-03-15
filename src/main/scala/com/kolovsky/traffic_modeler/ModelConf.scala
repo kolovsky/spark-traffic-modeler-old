@@ -11,6 +11,7 @@ class ModelConf extends Serializable{
   var beta: Double = 0
   var gamma: Double = 0
   var F: Double => Double = F_log_normal
+  var searchRadius: Double = Double.PositiveInfinity
 
   def F_log_normal(x: Double): Double = {
     return alpha * math.exp(beta * math.log(x + 1))
@@ -56,6 +57,9 @@ class ModelConf extends Serializable{
       else {
         throw new Exception("Distribution function with name "+value+" does not exist.")
       }
+    }
+    else if(variable == "search_radius"){
+      searchRadius = value.toDouble
     }
     else {
       throw new Exception("Variable with name "+variable+" does not exist.")

@@ -14,7 +14,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
   val network = g
   //(node_id, Pi)
   val zones = zone
-  println("HHH")
+  //println("HHH")
 
   /**
    * Compute cost matrix.
@@ -23,7 +23,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
    */
   def costMatrix(RDD_zones: RDD[Zone]): RDD[(Zone, Zone, Double)] = {
     val RDD_cost = RDD_zones
-      .flatMap(z => network.getCosts(z, zones, conf.length_coef, conf.time_coef))
+      .flatMap(z => network.getCosts(z, zones, conf.length_coef, conf.time_coef, conf.searchRadius))
       .filter(p => p._3 != 0 && !p._3.isInfinity)
     return RDD_cost
   }
@@ -32,6 +32,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
    *
    * Compute OD Matrix from cost matrix and vector of zones.
    * The method apply distibution function (Tij = F(dij) * Ti * Tj) and balance the matrix.
+   * @deprecated use function estimateODMatrixK
    * @param costMartixP - input cost matric RDD[(source, destination, cost)]
    * @return - OD Matrix (is not calibrate) RDD[(source, destination, trips)]
    */
@@ -73,7 +74,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
    * @param cells ODM (RDD[com.kolovsky.traffic_modeler.Cell])
    * @return RDD of count profile with traffic RDD[(edge_id, trips)]
    */
-  def assigmentPairsToEdge3(cells: RDD[Cell]): RDD[(Int, Double)] = {
+  private def assigmentPairsToEdge3(cells: RDD[Cell]): RDD[(Int, Double)] = {
     val pairs = cells.flatMap(c => c.count_profile.map(id => (id, c.trips)))
       .reduceByKey(_+_)
     return pairs
@@ -85,7 +86,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
    * @param v_hm HashMap of reference traffic (edge_id, traffic)
    * @return RDD[(source, destination, trips, Array[edge_id])]
    */
-  def filtredPath(in_OD: RDD[(Zone, Zone, Double)], v_hm: HashMap[Int, Double]): RDD[(Zone, Zone, Double, Array[Int])] = {
+  private def filtredPath(in_OD: RDD[(Zone, Zone, Double)], v_hm: HashMap[Int, Double]): RDD[(Zone, Zone, Double, Array[Int])] = {
     def filter(p: Array[Int]): Array[Int] ={
       val out = ListBuffer[Int]()
       for (l <- p){
@@ -98,8 +99,13 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
     val pairs = in_OD.map(c => (c._1.id,(c._1,Array((c._2, c._3)))))
       .reduceByKey((a,b) => (a._1, b._2 ++ a._2))
       .map(x => x._2 )
-      .flatMap(r => network.getPathsTrips(r._1,r._2.toArray, conf.length_coef, conf.time_coef))
-      .map(x => (x._1, x._2, x._3, filter(x._4)))
+      .flatMap(r => {
+        val ret = network.getPathsTrips(r._1,r._2, conf.length_coef, conf.time_coef, conf.searchRadius)
+        ret
+      })
+      .map(x => {
+        (x._1, x._2, x._3, filter(x._4))
+      })
 
     return pairs
   }
@@ -111,7 +117,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
    * @return - value of Z function
    */
   def Z(v_hm: HashMap[Int, Double], v_m: RDD[(Int, Double)]): Double = {
-    return v_m.map(mod => math.pow((v_hm.get(mod._1).get - mod._2),2) ).reduce(_+_)
+    return v_m.map(mod => math.pow(v_hm(mod._1) - mod._2, 2)).reduce(_+_)
   }
 
   /**
@@ -121,7 +127,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
    * @param v_m_hm - HashMap[edge_id, model_traffic] model traffic on counts profile
    * @return derivation (Double)
    */
-  def gradZi(path: Array[Int],v_hm: HashMap[Int, Double], v_m_hm: HashMap[Int, Double]): Double = {
+  private def gradZi(path: Array[Int],v_hm: HashMap[Int, Double], v_m_hm: HashMap[Int, Double]): Double = {
     var out: Double = 0
     for (a <- path){
       val v_n = v_hm.get(a)
@@ -139,7 +145,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
    * @param dir
    * @return bound (low, up)
    */
-  def getBoundFromDir(dir: Double): (Double, Double) ={
+  private def getBoundFromDir(dir: Double): (Double, Double) ={
     //bound
     var upB = Double.PositiveInfinity
     var downB = Double.NegativeInfinity
@@ -159,7 +165,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
    * @param cells - RDD of com.kolovsky.traffic_modeler.Cell
    * @return RDD of com.kolovsky.traffic_modeler.Cell
    */
-  def oneDimensionalMinimalization(v_hm: HashMap[Int, Double], v_m_hm: HashMap[Int, Double], cells: RDD[Cell]): RDD[Cell] ={
+  private def oneDimensionalMinimalization(v_hm: HashMap[Int, Double], v_m_hm: HashMap[Int, Double], cells: RDD[Cell]): RDD[Cell] ={
     // (zone, zone, trips, direction, path)
     val bound = cells.map(c => getBoundFromDir(c.dir)).reduce((a,b) => (math.max(a._1,b._1), math.min(a._2,b._2)))
 
@@ -211,6 +217,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
     v_hm ++= v
 
     val p = filtredPath(in_OD, v_hm)
+
     var odm = p.map(x => {
       val c = new Cell(x._1, x._2)
       c.count_profile = x._4
@@ -222,8 +229,6 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
 
     var odm_uc: RDD[Cell] = null
     var odm_dir: RDD[Cell] = null
-
-
 
     var v_m = assigmentPairsToEdge3(odm)
     v_m.persist(StorageLevel.MEMORY_AND_DISK)
@@ -298,7 +303,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
    */
   def assigmentTraffic(ODMatrix: RDD[(Zone, Zone, Double)], RDD_zones: RDD[Zone]): RDD[(Int, Double)] = {
     val paths = RDD_zones
-      .flatMap(z => network.getPaths(z, zones, conf.length_coef, conf.time_coef))
+      .flatMap(z => network.getPaths(z, zones, conf.length_coef, conf.time_coef, conf.searchRadius))
       .filter(p => p._3 != 0 && !p._3.isInfinity)
     val join = ODMatrix.map(c => ((c._1.id, c._2.id),c._3)).join(paths.map(p => ((p._1.id, p._2.id),p._4)))
     val out = join.flatMap(x => x._2._2.map(y => (y, x._2._1))).reduceByKey(_+_, 100)
@@ -314,7 +319,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
     val out = ODMatrix.map(c => (c._1.id,(c._1,ListBuffer((c._2, c._3)))))
       .reduceByKey((a,b) => (a._1, b._2 ++ a._2))
       .map(x => x._2 )
-      .flatMap(r => network.getPathsTrips(r._1,r._2.toArray, conf.length_coef, conf.time_coef))
+      .flatMap(r => network.getPathsTrips(r._1,r._2.toArray, conf.length_coef, conf.time_coef, conf.searchRadius))
       .flatMap(x => x._4.map(id => (id, x._3))).reduceByKey(_+_)
     return out
   }
@@ -328,6 +333,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
 
   /**
     * Calibrate OD matrix using algorithm publicated in Doblas 2005
+    * EXPERIMENTAL
     *
     * Doblas, J. & Benitez, F. G. An approach to estimating and updating origin--destination matrices based upon traffic counts
     * preserving the prior structure of a survey matrix
@@ -446,6 +452,7 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
 
   /**
     * Compute gradient of Lagransian function
+    * EXPERIMENTAL
     * @param odm OD Matrix RDD[ODPair]
     * @param v_hm - reference counts
     * @param v_m_hm - model traffic
@@ -556,10 +563,95 @@ class Model(g: Network, zone: Array[Zone], confi: ModelConf) extends Serializabl
     * @param x
     * @return
     */
-  private def BO(x: Double): Double ={
+  private def BO(x: Double): Double = {
     if (x <= 0){
       return x
     }
     return 0
   }
+
+  /**
+    * Estimate OD Matrix using gravity model. Deterrence function is f(c) = c^(alpha) * exp(- beta * c)
+    * Tij = k * Oi * Dj * Ai * Bj * f(Cij)
+    * Oi is number of trips starts in zone i
+    * Dj is number of trips ends in zone j
+    * Ai and Bj are balance coeficients
+    * k is determinated using least squares method (min (Va - Va_ref)^2)
+    * @param RDD_zones zones RDD[Zone]
+    * @param init init deterrence function parameter (alpha, beta, k)
+    * @param v reference traffic count Array[(edge_id, counts)]
+    * @return OD Matrix RDD[(origin, destination, trips)]
+    */
+  def estimateODMatrixK(RDD_zones: RDD[Zone], init: (Double, Double, Double), v: Array[(Int, Double)]): RDD[(Zone, Zone, Double)] = {
+    // hash map of counts
+    val v_hm = new HashMap[Int, Double]()
+    v_hm ++= v
+    // paths + cost
+    val cost_filtred_path = RDD_zones
+      .flatMap(z => network.getPaths(z, zones, conf.length_coef, conf.time_coef, conf.searchRadius))
+      .filter(p => p._3 != 0 && !p._3.isInfinity)
+      .map(x =>{
+        val p = x._4
+        val out = ListBuffer[Int]()
+        for (l <- p){
+          if (v_hm.get(l).isDefined){
+            out += l
+          }
+        }
+        (x._1, x._2, x._3, out.toArray)
+      })
+
+    // model parameters
+    val alpha = init._1
+    val beta = init._2
+    // ODM before balance
+    val odm_bb = cost_filtred_path.map(model2(_,alpha, beta))
+    odm_bb.persist()
+    odm_bb.localCheckpoint()
+    //cost_filtred_path.collect().map(x => println("0: "+x))
+
+    val dK = balance(odm_bb)
+    dK.persist()
+    val vK = dK.flatMap(x => x._4.map(id => (id, x._3))).reduceByKey(_+_)
+    vK.persist()
+    val k = vK.map(x => v_hm(x._1)* x._2).reduce(_+_) / vK.map(x => math.pow(x._2,2)).reduce(_+_)
+    println("param 'k' is "+ k)
+    return dK.map(x => (x._1, x._2, k * x._3))
+  }
+
+  def model2(cell: (Zone, Zone, Double, Array[Int]), alpha: Double, beta: Double): (Zone, Zone, Double, Array[Int]) ={
+    val c = cell._3
+    val out_val = cell._1.trips * cell._2.trips * math.pow(c, alpha) * math.exp(- beta * c)
+    return (cell._1, cell._2, out_val, cell._4)
+  }
+
+  /**
+    * Method balances OD Matrix.
+    * @param odm - OD Matrix RDD[(source, destination, trips, filtred_path)]
+    * @param debug
+    * @return OD Matrix
+    */
+  def balance(odm: RDD[(Zone, Zone, Double, Array[Int])], debug: Boolean = false): RDD[(Zone, Zone, Double, Array[Int])] = {
+    odm.persist()
+    val row_coef = odm.map(x => (x._1, x._3)).reduceByKey(_+_).map(x => (x._1, x._1.trips.toDouble / x._2.toDouble))
+    row_coef.persist()
+    val odm_ar = odm.map(x => (x._1, x)).join(row_coef).map(_._2).map(x => (x._1._1, x._1._2, x._1._3 * x._2))
+    val col_coef = odm_ar.map(x => (x._2, x._3)).reduceByKey(_+_).map(x => (x._1, x._1.trips.toDouble / x._2.toDouble))
+
+    val odm_ac = odm.map(x => (x._2, x)).join(col_coef).map(_._2).map(x => (x._1._1, x)).join(row_coef).map(_._2)
+      .map(x => (x._1._1._1, x._1._1._2, x._1._1._3 * x._2 * x._1._2, x._1._1._4))
+    odm_ac.persist()
+
+    //compute average balance
+    val row_coef2 = odm_ac.map(x => (x._1, x._3)).reduceByKey(_+_).map(x => x._1.trips.toDouble / x._2.toDouble)
+    row_coef2.persist()
+    //println(row_coef2.first())
+    if (debug){
+      println("Balance coef: "+row_coef2.reduce(_+_)/row_coef2.count())
+    }
+    return odm_ac
+  }
 }
+
+
+

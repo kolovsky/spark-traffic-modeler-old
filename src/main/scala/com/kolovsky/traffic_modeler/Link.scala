@@ -5,8 +5,8 @@ package com.kolovsky.traffic_modeler
   */
 class Link (edges_id: Array[Int], length: Double, time: Double, e1i: EdgeIndex, e2i: EdgeIndex,index: Int) extends Serializable{
   val ids = edges_id
-  val l = length
-  val t = time
+  var l = length
+  var t = time
   val e1 = e1i
   val e2 = e2i
   val i = index

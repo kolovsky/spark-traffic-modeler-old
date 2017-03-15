@@ -16,9 +16,10 @@ trait Network {
    * @param destination - list of destination zone
    * @param l_coef - coeficient for length
    * @param t_coef - coeficient for time
+   * @param searchRadius - search limit for Dijkstra's algorithm
    * @return Array[(origin, destination, cost, Array(edge id))] -- path and cost
    */
-  def getPaths(s: Zone, destination: Array[Zone], l_coef: Double, t_coef: Double): Array[(Zone, Zone, Double, Array[Int])]
+  def getPaths(s: Zone, destination: Array[Zone], l_coef: Double, t_coef: Double, searchRadius: Double = Double.PositiveInfinity): Array[(Zone, Zone, Double, Array[Int])]
 
   /**
    * Return paths from source zone to all destination zone. Edge cost is computed as l_coef*length + t_coef*time.
@@ -27,9 +28,10 @@ trait Network {
    * @param destination - list of destination zone
    * @param l_coef - coeficient for length
    * @param t_coef - coeficient for time
+   * @param searchRadius - search limit for Dijkstra's algorithm
    * @return Array[(origin, destination, traffic, Array(edge id))]
    */
-  def getPathsTrips(s: Zone, destination: Array[(Zone, Double)], l_coef: Double, t_coef: Double): Array[(Zone, Zone, Double, Array[Int])]
+  def getPathsTrips(s: Zone, destination: Array[(Zone, Double)], l_coef: Double, t_coef: Double, searchRadius: Double = Double.PositiveInfinity): Array[(Zone, Zone, Double, Array[Int])]
 
   /**
    * Transform node_id to Node object
@@ -44,8 +46,9 @@ trait Network {
    * @param destination - list of destination zone
    * @param l_coef - coeficient for length
    * @param t_coef - coeficient for time
+   * @param searchRadius - search limit for Dijkstra's algorithm
    * @return Array[(source_zone, destination_zone, cost)]
    */
-  def getCosts(s: Zone, destination: Array[Zone], l_coef: Double, t_coef: Double): Array[(Zone, Zone, Double)]
+  def getCosts(s: Zone, destination: Array[Zone], l_coef: Double, t_coef: Double, searchRadius: Double = Double.PositiveInfinity): Array[(Zone, Zone, Double)]
 
 }

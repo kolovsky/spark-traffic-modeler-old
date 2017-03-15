@@ -67,7 +67,12 @@ class NetworkIndex extends Network with Serializable {
   def reduceSize(mandatoryNodes: Array[Int]): Unit ={
     // labeled mandatory nodes
     for(id <- mandatoryNodes){
-      idToNode(id).vertexDeegre = -1
+      try{
+        idToNode(id).vertexDeegre = -1
+      }
+      catch {
+        case e: Exception => e
+      }
     }
     // start DFS
     val q = new Stack[Node]()
@@ -152,8 +157,20 @@ class NetworkIndex extends Network with Serializable {
       }
       links(l.i) = null
     }
+  }
 
-
+  /**
+    *
+    * @return number of links in network
+    */
+  def getLinkCount(): Int = {
+    var c = 0
+    for (l <- links){
+      if (l != null){
+        c += 1
+      }
+    }
+    return c
   }
 
   /**
@@ -161,9 +178,10 @@ class NetworkIndex extends Network with Serializable {
    * @param s - source zone
    * @param l_coef - parameter for length
    * @param t_coef - parameter for transport time
+   * @param searchRadius - search radius for Dijkstaq
    * @return (distance_node_map, previous_edge_node map)
    */
-  def dijkstraSearch(s:Zone, l_coef: Double, t_coef: Double): (Array[Double], Array[EdgeIndex]) ={
+  def dijkstraSearch(s:Zone, l_coef: Double, t_coef: Double, searchRadius: Double = Double.PositiveInfinity): (Array[Double], Array[EdgeIndex]) ={
     val pq = PriorityQueue.empty[(Double, Node)](MinOrderNodeStatic)
     var s_node = idToNode(s.node_id)
     val dist: Array[Double] = Array.ofDim(nodes.length)
@@ -173,12 +191,13 @@ class NetworkIndex extends Network with Serializable {
     }
     dist(s_node.i) = 0
     pq.enqueue((0,s_node))
-    var pp = 0 //smazat
     var cost: Double = 0
     while (pq.nonEmpty){
-      var n = pq.dequeue()._2
+      val n = pq.dequeue()._2
+      if (dist(n.i) > searchRadius){
+        return (dist, prev)
+      }
       for (eo <- n.edges){
-        pp += 1 //spazat
         val e = eo.asInstanceOf[EdgeIndex]
         if(dist(n.i) + e.cost(l_coef, t_coef, links) < dist(e.t)){
           dist(e.t) = dist(n.i) + e.cost(l_coef, t_coef, links)
@@ -187,12 +206,11 @@ class NetworkIndex extends Network with Serializable {
         }
       }
     }
-    //println("Dij relax: "+pp)
     return (dist, prev)
   }
 
-  def getPaths(s: Zone, destination: Array[Zone], l_coef: Double, t_coef: Double): Array[(Zone, Zone, Double, Array[Int])] = {
-    val (dist, prev) = dijkstraSearch(s, l_coef, t_coef)
+  def getPaths(s: Zone, destination: Array[Zone], l_coef: Double, t_coef: Double, searchRadius: Double = Double.PositiveInfinity): Array[(Zone, Zone, Double, Array[Int])] = {
+    val (dist, prev) = dijkstraSearch(s, l_coef, t_coef, searchRadius)
     val paths: ListBuffer[(Zone, Zone, Double, Array[Int])] = ListBuffer()
     for(d <- destination){
       paths += ((s, d, dist(idToNode(d.node_id).i), getPath(prev, d.node_id)))
@@ -200,8 +218,8 @@ class NetworkIndex extends Network with Serializable {
     return paths.toArray
   }
 
-  def getPathsTrips(s: Zone, destination: Array[(Zone, Double)], l_coef: Double, t_coef: Double): Array[(Zone, Zone, Double, Array[Int])] = {
-    val (dist, prev) = dijkstraSearch(s, l_coef, t_coef)
+  def getPathsTrips(s: Zone, destination: Array[(Zone, Double)], l_coef: Double, t_coef: Double, searchRadius: Double = Double.PositiveInfinity): Array[(Zone, Zone, Double, Array[Int])] = {
+    val (dist, prev) = dijkstraSearch(s, l_coef, t_coef, searchRadius)
     val paths: ListBuffer[(Zone, Zone, Double, Array[Int])] = ListBuffer()
     for(d <- destination){
       paths += ((s, d._1, d._2, getPath(prev, d._1.node_id)))
@@ -216,7 +234,7 @@ class NetworkIndex extends Network with Serializable {
    * @return - path Array[edge_id]
    */
   private def getPath(prev: Array[EdgeIndex], t: Int): Array[Int] = {
-    val t_node = hm.get(t).get
+    val t_node = hm(t)
     var ae = prev(t_node.i)
     val path: ListBuffer[Int] = ListBuffer()
     while (ae != null){
@@ -234,8 +252,8 @@ class NetworkIndex extends Network with Serializable {
       return n.get
     }
   }
-  def getCosts(s: Zone, destination: Array[Zone], l_coef: Double, t_coef: Double): Array[(Zone, Zone, Double)] = {
-    val (dist, prev) = dijkstraSearch(s, l_coef, t_coef)
+  def getCosts(s: Zone, destination: Array[Zone], l_coef: Double, t_coef: Double, searchRadius: Double = Double.PositiveInfinity): Array[(Zone, Zone, Double)] = {
+    val (dist, prev) = dijkstraSearch(s, l_coef, t_coef, searchRadius)
     val paths: ListBuffer[(Zone, Zone, Double)] = ListBuffer()
     for(d <- destination){
       paths += ((s, d, dist(idToNode(d.node_id).i)))
